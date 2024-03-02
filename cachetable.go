@@ -23,6 +23,9 @@ type CacheTable struct {
 	// All cached items.
 	items map[interface{}]*CacheItem
 
+	// Map to store key aliases
+	keyAliases map[interface{}]interface{}
+
 	// Timer responsible for triggering cleanup.
 	cleanupTimer *time.Timer
 	// Current timer duration.
@@ -46,13 +49,22 @@ func (table *CacheTable) Count() int {
 	return len(table.items)
 }
 
+// Count returns how many aliases are currently stored in the cache.
+func (table *CacheTable) CountAliases() int {
+	table.RLock()
+	defer table.RUnlock()
+	return len(table.keyAliases)
+}
+
 // Foreach all items
-func (table *CacheTable) Foreach(trans func(key interface{}, item *CacheItem)) {
+func (table *CacheTable) Foreach(trans func(key interface{}, item *CacheItem) bool) {
 	table.RLock()
 	defer table.RUnlock()
 
 	for k, v := range table.items {
-		trans(k, v)
+		if !trans(k, v) {
+			break
+		}
 	}
 }
 
@@ -181,10 +193,8 @@ func (table *CacheTable) addInternal(item *CacheItem) {
 	table.Unlock()
 
 	// Trigger callback after adding an item to cache.
-	if addedItem != nil {
-		for _, callback := range addedItem {
-			callback(item)
-		}
+	for _, callback := range addedItem {
+		callback(item)
 	}
 
 	// If we haven't set up any expiration check timer or found a more imminent item.
@@ -219,10 +229,8 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 	table.Unlock()
 
 	// Trigger callbacks before deleting an item from cache.
-	if aboutToDeleteItem != nil {
-		for _, callback := range aboutToDeleteItem {
-			callback(r)
-		}
+	for _, callback := range aboutToDeleteItem {
+		callback(r)
 	}
 
 	r.RLock()
@@ -236,6 +244,13 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 	table.Lock()
 	table.log("Deleting item with key", key, "created on", r.createdOn, "and hit", r.accessCount, "times from table", table.name)
 	delete(table.items, key)
+
+	// Also delete any aliases associated with this key
+	for alias, realKey := range table.keyAliases {
+		if realKey == key {
+			delete(table.keyAliases, alias)
+		}
+	}
 
 	return r, nil
 }
@@ -256,6 +271,14 @@ func (table *CacheTable) Exists(key interface{}) bool {
 	defer table.RUnlock()
 	_, ok := table.items[key]
 
+	if !ok {
+		// Check if the key is an alias
+		realKey, aliasOk := table.keyAliases[key]
+		if aliasOk {
+			_, ok = table.items[realKey]
+		}
+	}
+
 	return ok
 }
 
@@ -275,6 +298,12 @@ func (table *CacheTable) NotFoundAdd(key interface{}, lifeSpan time.Duration, da
 	return true
 }
 
+func (table *CacheTable) AddAlias(alias, key string) {
+	table.Lock()
+	defer table.Unlock()
+	table.keyAliases[alias] = key
+}
+
 // Value returns an item from the cache and marks it to be kept alive. You can
 // pass additional arguments to your DataLoader callback function.
 func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem, error) {
@@ -290,6 +319,15 @@ func (table *CacheTable) ValueOnly(key interface{}, args ...interface{}) (*Cache
 func (table *CacheTable) valueInternal(key interface{}, updateKeepAlive bool, args ...interface{}) (*CacheItem, error) {
 	table.RLock()
 	r, ok := table.items[key]
+
+	if !ok {
+		// Check if the key is an alias
+		realKey, aliasOk := table.keyAliases[key]
+		if aliasOk {
+			r, ok = table.items[realKey]
+		}
+	}
+
 	loadData := table.loadData
 	table.RUnlock()
 
@@ -323,6 +361,7 @@ func (table *CacheTable) Flush() {
 	table.log("Flushing table", table.name)
 
 	table.items = make(map[interface{}]*CacheItem)
+	table.keyAliases = make(map[interface{}]interface{})
 	table.cleanupInterval = 0
 	if table.cleanupTimer != nil {
 		table.cleanupTimer.Stop()

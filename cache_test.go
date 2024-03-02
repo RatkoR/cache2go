@@ -20,6 +20,7 @@ import (
 var (
 	k = "testkey"
 	v = "testvalue"
+	a = "alias"
 )
 
 func TestCache(t *testing.T) {
@@ -28,6 +29,10 @@ func TestCache(t *testing.T) {
 	table := Cache("testCache")
 	table.Add(k+"_1", 0*time.Second, v)
 	table.Add(k+"_2", 1*time.Second, v)
+
+	// add an alias
+	table.AddAlias(a+"_1", k+"_2")
+	table.AddAlias(a+"_2", k+"_2")
 
 	// check if both items are still there
 	p, err := table.Value(k + "_1")
@@ -39,8 +44,18 @@ func TestCache(t *testing.T) {
 		t.Error("Error retrieving data from cache", err)
 	}
 
+	// check that alias exists
+	p, err = table.Value(a + "_1")
+	if err != nil || p == nil || p.Data().(string) != v {
+		t.Error("Error retrieving alias 1", err)
+	}
+	p, err = table.Value(a + "_2")
+	if err != nil || p == nil || p.Data().(string) != v {
+		t.Error("Error retrieving alias 2", err)
+	}
+
 	// sanity checks
-	if p.AccessCount() != 1 {
+	if p.AccessCount() != 3 {
 		t.Error("Error getting correct access count")
 	}
 	if p.LifeSpan() != 1*time.Second {
@@ -51,6 +66,11 @@ func TestCache(t *testing.T) {
 	}
 	if p.CreatedOn().Unix() == 0 {
 		t.Error("Error getting creation time")
+	}
+
+	_, err = table.Value(a + "_3")
+	if err == nil {
+		t.Error("Error retrieving alias 3 - should not exist", err)
 	}
 }
 
@@ -106,6 +126,20 @@ func TestExists(t *testing.T) {
 	}
 }
 
+func TestExistsByKeyAlias(t *testing.T) {
+	// add an expiring item
+	table := Cache("testExists")
+	table.Add(k, 0, v)
+	table.AddAlias(a+"_1", k)
+	// check if it exists
+	if !table.Exists(a + "_1") {
+		t.Error("Error verifying existing alias 1")
+	}
+	if table.Exists(a + "_2") {
+		t.Error("Error verifying alias 2 does not exist")
+	}
+}
+
 func TestNotFoundAdd(t *testing.T) {
 	table := Cache("testNotFoundAdd")
 
@@ -152,10 +186,12 @@ func TestNotFoundAddConcurrency(t *testing.T) {
 
 	t.Log(added, idle)
 
-	table.Foreach(func(key interface{}, item *CacheItem) {
+	table.Foreach(func(key interface{}, item *CacheItem) bool {
 		v, _ := item.Data().(int)
 		k, _ := key.(int)
 		t.Logf("%02x  %04x\n", k, v)
+
+		return true
 	})
 }
 
@@ -209,6 +245,7 @@ func TestFlush(t *testing.T) {
 	// add an item to the cache
 	table := Cache("testFlush")
 	table.Add(k, 10*time.Second, v)
+	table.AddAlias(a, k)
 	// flush the entire table
 	table.Flush()
 
@@ -220,6 +257,9 @@ func TestFlush(t *testing.T) {
 	// make sure there's really nothing else left in the cache
 	if table.Count() != 0 {
 		t.Error("Error verifying count of flushed table")
+	}
+	if table.CountAliases() != 0 {
+		t.Error("Error verifying count of aliases")
 	}
 }
 
