@@ -20,6 +20,7 @@ import (
 var (
 	k = "testkey"
 	v = "testvalue"
+	a = "alias"
 )
 
 func TestCache(t *testing.T) {
@@ -28,6 +29,10 @@ func TestCache(t *testing.T) {
 	table := Cache("testCache")
 	table.Add(k+"_1", 0*time.Second, v)
 	table.Add(k+"_2", 1*time.Second, v)
+
+	// add an alias
+	table.AddAlias(a+"_1", k+"_2")
+	table.AddAlias(a+"_2", k+"_2")
 
 	// check if both items are still there
 	p, err := table.Value(k + "_1")
@@ -39,8 +44,18 @@ func TestCache(t *testing.T) {
 		t.Error("Error retrieving data from cache", err)
 	}
 
+	// check that alias exists
+	p, err = table.Value(a + "_1")
+	if err != nil || p == nil || p.Data().(string) != v {
+		t.Error("Error retrieving alias 1", err)
+	}
+	p, err = table.Value(a + "_2")
+	if err != nil || p == nil || p.Data().(string) != v {
+		t.Error("Error retrieving alias 2", err)
+	}
+
 	// sanity checks
-	if p.AccessCount() != 1 {
+	if p.AccessCount() != 3 {
 		t.Error("Error getting correct access count")
 	}
 	if p.LifeSpan() != 1*time.Second {
@@ -52,6 +67,11 @@ func TestCache(t *testing.T) {
 	if p.CreatedOn().Unix() == 0 {
 		t.Error("Error getting creation time")
 	}
+
+	_, err = table.Value(a + "_3")
+	if err == nil {
+		t.Error("Error retrieving alias 3 - should not exist", err)
+	}
 }
 
 func TestCacheExpire(t *testing.T) {
@@ -59,11 +79,18 @@ func TestCacheExpire(t *testing.T) {
 
 	table.Add(k+"_1", 250*time.Millisecond, v+"_1")
 	table.Add(k+"_2", 200*time.Millisecond, v+"_2")
+	table.Add(k+"_3", 200*time.Millisecond, v+"_3")
 
 	time.Sleep(100 * time.Millisecond)
 
 	// check key `1` is still alive
 	_, err := table.Value(k + "_1")
+	if err != nil {
+		t.Error("Error retrieving value from cache:", err)
+	}
+
+	// check key `3`: valueOnly does not extend keep alive
+	_, err = table.ValueOnly(k + "_3")
 	if err != nil {
 		t.Error("Error retrieving value from cache:", err)
 	}
@@ -81,6 +108,12 @@ func TestCacheExpire(t *testing.T) {
 	if err == nil {
 		t.Error("Found key which should have been expired by now")
 	}
+
+	// check key `3`, it should have been removed by now
+	_, err = table.Value(k + "_3")
+	if err == nil {
+		t.Error("Found key which should have been expired by now")
+	}
 }
 
 func TestExists(t *testing.T) {
@@ -90,6 +123,20 @@ func TestExists(t *testing.T) {
 	// check if it exists
 	if !table.Exists(k) {
 		t.Error("Error verifying existing data in cache")
+	}
+}
+
+func TestExistsByKeyAlias(t *testing.T) {
+	// add an expiring item
+	table := Cache("testExists")
+	table.Add(k, 0, v)
+	table.AddAlias(a+"_1", k)
+	// check if it exists
+	if !table.Exists(a + "_1") {
+		t.Error("Error verifying existing alias 1")
+	}
+	if table.Exists(a + "_2") {
+		t.Error("Error verifying alias 2 does not exist")
 	}
 }
 
@@ -139,10 +186,12 @@ func TestNotFoundAddConcurrency(t *testing.T) {
 
 	t.Log(added, idle)
 
-	table.Foreach(func(key interface{}, item *CacheItem) {
+	table.Foreach(func(key interface{}, item *CacheItem) bool {
 		v, _ := item.Data().(int)
 		k, _ := key.(int)
 		t.Logf("%02x  %04x\n", k, v)
+
+		return true
 	})
 }
 
@@ -196,6 +245,7 @@ func TestFlush(t *testing.T) {
 	// add an item to the cache
 	table := Cache("testFlush")
 	table.Add(k, 10*time.Second, v)
+	table.AddAlias(a, k)
 	// flush the entire table
 	table.Flush()
 
@@ -207,6 +257,9 @@ func TestFlush(t *testing.T) {
 	// make sure there's really nothing else left in the cache
 	if table.Count() != 0 {
 		t.Error("Error verifying count of flushed table")
+	}
+	if table.CountAliases() != 0 {
+		t.Error("Error verifying count of aliases")
 	}
 }
 

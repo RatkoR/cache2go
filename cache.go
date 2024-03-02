@@ -30,8 +30,9 @@ func Cache(table string) *CacheTable {
 		// Double check whether the table exists or not.
 		if !ok {
 			t = &CacheTable{
-				name:  table,
-				items: make(map[interface{}]*CacheItem),
+				name:       table,
+				items:      make(map[interface{}]*CacheItem),
+				keyAliases: make(map[interface{}]interface{}),
 			}
 			cache[table] = t
 		}
